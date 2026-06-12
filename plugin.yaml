@@ -1,0 +1,15 @@
+name: skmemory
+version: 0.1.0
+description: >-
+  skmemory as a Hermes memory backend. SQLite out-of-the-box (zero infra,
+  keyword recall) with an opt-in pgvector toggle for semantic/RAG search against
+  a Postgres+pgvector store. A self-contained on-ramp into the SKWorld ecosystem:
+  one `pip install skmemory`, no Docker, no embedding server required.
+author: "SKWorld (Chef + Lumina)"
+# `exclusive`: memory category has exactly one active provider, selected via the
+# `memory.provider` config key. The memory subsystem loads it; the general plugin
+# scanner skips `exclusive` plugins.
+kind: exclusive
+# `hermes memory setup` auto-installs these via uv/pip when the provider is chosen.
+pip_dependencies:
+  - skmemory
