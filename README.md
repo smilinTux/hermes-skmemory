@@ -43,12 +43,27 @@ hermes memory setup        # pick "skmemory"; auto-installs `skmemory`
 your Postgres + embedding server. Env equivalents: `SKMEMORY_VECTOR_BACKEND`,
 `SKMEMORY_DSN`, `SKMEMORY_EMBED_URL`, `SKMEMORY_EMBED_MODEL`.
 
-## Isolation
+## Two modes
 
-The plugin creates an **isolated, Hermes-scoped** skmemory store under
-`~/.hermes/skmemory/agents/<agent>/` and sets `SKCAPSTONE_HOME`/`SKAGENT` for the
-gateway process. It does **not** read or write any shared `~/.skcapstone` agent
-memory — a Hermes user's memories stay self-contained.
+**Isolated (default, OOTB)** — the plugin creates a Hermes-scoped store under
+`~/.hermes/skmemory/agents/<agent>/`. It does **not** touch any shared
+`~/.skcapstone` store; a Hermes user's memories stay self-contained.
+
+**Linked / shim** — point Hermes at an *existing* skcapstone store (e.g. your own
+`~/.skcapstone` with `agent: lumina`) so the agent recalls your real memories.
+Set `skcapstone_home` + `agent` in config. **Strongly pair with `read_only: true`**
+so Hermes can search/recall but never writes into your precious store (the
+`skmemory_store` tool is withheld and refused). In linked mode the plugin creates
+and overwrites **nothing** in the target store.
+
+```json
+{ "skcapstone_home": "/home/cbrd21/.skcapstone", "agent": "lumina",
+  "read_only": true, "vector_backend": "pgvector",
+  "dsn": "postgresql://…", "embed_url": "http://192.168.0.100:11434/api/embed",
+  "embed_model": "mxbai-embed-large" }
+```
+
+Env equivalents: `SKMEMORY_LINK_HOME`, `SKMEMORY_READ_ONLY`.
 
 ## Tools exposed to the model
 

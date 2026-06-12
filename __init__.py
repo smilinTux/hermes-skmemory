@@ -83,6 +83,7 @@ class SkmemoryProvider(MemoryProvider):
         self.store = None
         self._cfg: Dict[str, Any] = {}
         self._agent = "hermes"
+        self._read_only = False
 
     # -- identity -----------------------------------------------------------
     @property
@@ -98,6 +99,13 @@ class SkmemoryProvider(MemoryProvider):
     def _load_config(self, hermes_home: Path) -> Dict[str, Any]:
         cfg = {
             "agent": "hermes",
+            # Linked/shim mode: point at an EXISTING skcapstone store (e.g.
+            # ~/.skcapstone with agent=lumina) instead of an isolated one.
+            "skcapstone_home": os.environ.get("SKMEMORY_LINK_HOME", ""),
+            # Read-only: expose search/recall but disable the write tool, so a
+            # linked precious store is never modified by Hermes.
+            "read_only": str(os.environ.get("SKMEMORY_READ_ONLY", "")).lower()
+            in ("1", "true", "yes"),
             "vector_backend": os.environ.get("SKMEMORY_VECTOR_BACKEND", "sqlite"),
             "dsn": os.environ.get("SKMEMORY_DSN", ""),
             "embed_url": os.environ.get("SKMEMORY_EMBED_URL", ""),
@@ -117,16 +125,32 @@ class SkmemoryProvider(MemoryProvider):
         hermes_home = Path(kwargs.get("hermes_home") or os.path.expanduser("~/.hermes"))
         self._cfg = self._load_config(hermes_home)
         self._agent = str(self._cfg.get("agent") or kwargs.get("agent_identity") or "hermes")
+        self._read_only = bool(self._cfg.get("read_only"))
 
-        # Bootstrap an ISOLATED skcapstone scaffold so `import skmemory` succeeds
-        # without touching any shared ~/.skcapstone agent store.
-        skcap_home = hermes_home / "skmemory"
-        agent_dir = skcap_home / "agents" / self._agent
-        for sub in ("config", "memory", "seeds"):
-            (agent_dir / sub).mkdir(parents=True, exist_ok=True)
-        cfg_file = agent_dir / "config" / "skmemory.yaml"
-        if not cfg_file.exists():
-            cfg_file.write_text("{}\n", encoding="utf-8")
+        link_home = str(self._cfg.get("skcapstone_home") or "").strip()
+        if link_home:
+            # LINKED / SHIM mode — use an EXISTING skcapstone store as-is. Do NOT
+            # create or overwrite anything in the user's store. Recommended with
+            # read_only=true so Hermes can recall but never modify it.
+            skcap_home = Path(os.path.expanduser(link_home))
+            agent_dir = skcap_home / "agents" / self._agent
+            if not agent_dir.is_dir():
+                logger.warning(
+                    "skmemory: linked skcapstone agent dir not found: %s — recall "
+                    "may be empty (not creating it in linked mode)", agent_dir,
+                )
+            self._mode = "linked"
+        else:
+            # ISOLATED / OOTB mode — bootstrap a Hermes-scoped scaffold so
+            # `import skmemory` succeeds without touching any shared ~/.skcapstone.
+            skcap_home = hermes_home / "skmemory"
+            agent_dir = skcap_home / "agents" / self._agent
+            for sub in ("config", "memory", "seeds"):
+                (agent_dir / sub).mkdir(parents=True, exist_ok=True)
+            cfg_file = agent_dir / "config" / "skmemory.yaml"
+            if not cfg_file.exists():
+                cfg_file.write_text("{}\n", encoding="utf-8")
+            self._mode = "isolated"
         os.environ["SKCAPSTONE_HOME"] = str(skcap_home)
         os.environ["SKAGENT"] = self._agent
 
@@ -140,10 +164,10 @@ class SkmemoryProvider(MemoryProvider):
         vector = self._build_vector_backend()
         try:
             self.store = MemoryStore(vector=vector)  # SQLite primary + optional pg vector
-            mode = "pgvector" if vector is not None else "sqlite"
+            backend = "pgvector" if vector is not None else "sqlite"
             logger.info(
-                "skmemory: initialized (agent=%s, backend=%s, home=%s)",
-                self._agent, mode, skcap_home,
+                "skmemory: initialized (mode=%s, agent=%s, backend=%s, read_only=%s, home=%s)",
+                self._mode, self._agent, backend, self._read_only, skcap_home,
             )
         except Exception as e:
             logger.warning("skmemory: MemoryStore init failed: %s", e)
@@ -198,6 +222,9 @@ class SkmemoryProvider(MemoryProvider):
         return
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
+        # read-only (e.g. linked to a precious store) → recall only, no writes.
+        if self._read_only:
+            return [SEARCH_SCHEMA]
         return [SEARCH_SCHEMA, STORE_SCHEMA]
 
     def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
@@ -210,6 +237,8 @@ class SkmemoryProvider(MemoryProvider):
                 results = self.store.search(q, limit=limit)
                 return json.dumps({"results": self._memories_to_dicts(results)})
             if tool_name == "skmemory_store":
+                if self._read_only:
+                    return _err("skmemory is read-only (linked store); writes disabled")
                 content = (args or {}).get("content", "")
                 if not content.strip():
                     return _err("content is required")
