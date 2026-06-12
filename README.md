@@ -70,8 +70,12 @@ Env equivalents: `SKMEMORY_LINK_HOME`, `SKMEMORY_READ_ONLY`.
 - `skmemory_search(query, limit)` — recall facts/preferences/context.
 - `skmemory_store(content, title?, tags?)` — persist something durable.
 
-v0.1 persists explicitly via the tool (no write-on-every-turn, to avoid bloat);
-automatic turn extraction can be added later (`on_session_end` / `on_pre_compress`).
+**Sessions write to memory:** each completed primary-session turn is captured as
+a SHORT-term snapshot (tagged `hermes` + `session:<id>`, source `hermes`);
+skmemory's own synthesis (skwhisper / `memory_synthesize_*`) consolidates them
+over time. Writes are gated to **primary** sessions — cron/subagent contexts are
+skipped so their system prompts can't corrupt memory. `read_only: true` disables
+all writes (recall-only) for cases where you don't want a store modified.
 
 ## Status
 

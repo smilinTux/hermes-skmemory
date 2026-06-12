@@ -84,6 +84,8 @@ class SkmemoryProvider(MemoryProvider):
         self._cfg: Dict[str, Any] = {}
         self._agent = "hermes"
         self._read_only = False
+        self._writable = False
+        self._mode = "isolated"
 
     # -- identity -----------------------------------------------------------
     @property
@@ -126,6 +128,11 @@ class SkmemoryProvider(MemoryProvider):
         self._cfg = self._load_config(hermes_home)
         self._agent = str(self._cfg.get("agent") or kwargs.get("agent_identity") or "hermes")
         self._read_only = bool(self._cfg.get("read_only"))
+        # Writes are enabled for primary sessions only. Cron/subagent contexts
+        # are skipped (their system prompts would corrupt the user's memory), and
+        # read_only disables all writes regardless.
+        agent_context = str(kwargs.get("agent_context", "primary") or "primary")
+        self._writable = (agent_context == "primary") and not self._read_only
 
         link_home = str(self._cfg.get("skcapstone_home") or "").strip()
         if link_home:
@@ -216,10 +223,26 @@ class SkmemoryProvider(MemoryProvider):
 
     def sync_turn(self, user_content: str, assistant_content: str, *,
                   session_id: str = "", messages: Optional[List[Dict[str, Any]]] = None) -> None:
-        # v0.1: no automatic write-on-every-turn (avoids store bloat). Persistence
-        # is explicit via the skmemory_store tool. Auto-extraction can be added
-        # later (e.g. on_session_end / on_pre_compress) following mem0's pattern.
-        return
+        # Sessions write to memory: each completed turn is captured as a
+        # SHORT-term snapshot tagged with the session. skmemory's own
+        # synthesis/consolidation (skwhisper, memory_synthesize_*) rolls these
+        # up over time. Gated on writable (primary context, not read-only).
+        if self.store is None or not self._writable:
+            return
+        if not (user_content or "").strip() and not (assistant_content or "").strip():
+            return
+        try:
+            title = ((user_content or assistant_content or "").strip()[:60]) or "turn"
+            content = f"User: {user_content}\n\nLumina: {assistant_content}".strip()[:4000]
+            tags = ["hermes"]
+            if session_id:
+                tags.append(f"session:{session_id}")
+            self.store.snapshot(
+                title=title, content=content, tags=tags,
+                source="hermes", source_ref=session_id or "",
+            )
+        except Exception as e:
+            logger.debug("skmemory sync_turn write failed: %s", e)
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         # read-only (e.g. linked to a precious store) → recall only, no writes.
