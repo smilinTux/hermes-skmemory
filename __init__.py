@@ -150,7 +150,15 @@ class SkmemoryProvider(MemoryProvider):
         else:
             # ISOLATED / OOTB mode — bootstrap a Hermes-scoped scaffold so
             # `import skmemory` succeeds without touching any shared ~/.skcapstone.
-            skcap_home = hermes_home / "skmemory"
+            #
+            # The scaffold dir must NOT be named "skmemory": the gateway runs as
+            # `python -m hermes_cli...`, so its CWD ($HERMES_HOME) is on
+            # sys.path[0]. A dir named "skmemory" there shadows the installed
+            # `skmemory` package as a namespace package → `from skmemory import
+            # MemoryStore` fails with "unknown location" and the store never
+            # initializes. A dotted name (".skmemory") is not a valid module
+            # name, so it can never shadow the package.
+            skcap_home = hermes_home / ".skmemory"
             agent_dir = skcap_home / "agents" / self._agent
             for sub in ("config", "memory", "seeds"):
                 (agent_dir / sub).mkdir(parents=True, exist_ok=True)
@@ -233,7 +241,10 @@ class SkmemoryProvider(MemoryProvider):
             return
         try:
             title = ((user_content or assistant_content or "").strip()[:60]) or "turn"
-            content = f"User: {user_content}\n\nLumina: {assistant_content}".strip()[:4000]
+            # Label the assistant turn with THIS agent's name, not a hardcoded
+            # one — the plugin ships to any Hermes user, not just Lumina.
+            speaker = (self._agent or "assistant").capitalize()
+            content = f"User: {user_content}\n\n{speaker}: {assistant_content}".strip()[:4000]
             tags = ["hermes"]
             if session_id:
                 tags.append(f"session:{session_id}")
