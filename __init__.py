@@ -24,6 +24,7 @@ Config — ``$HERMES_HOME/skmemory.json`` (all optional):
       "embed_model": "mxbai-embed-large"
     }
 """
+
 from __future__ import annotations
 
 import json
@@ -35,6 +36,46 @@ from typing import Any, Dict, List, Optional
 from agent.memory_provider import MemoryProvider
 
 logger = logging.getLogger(__name__)
+
+
+# -- per-chat scope (SKMEM-P0-23) -------------------------------------------
+# prefetch() injects memories into EVERY turn. Without a reader it ran an owner
+# search, so sacred / owner-only memories could land in a group chat. The reader
+# comes from Hermes' session scope (None = owner session, else "channel:<id>" or
+# "@public"; honours HERMES_MEMORY_OWNER / HERMES_MEMORY_OWNER_CHATS). Fail closed.
+_PUBLIC = "@public"
+
+
+def _session_reader():
+    """Return None (owner), or a reader string. Never raises; unknown means public."""
+    try:
+        from tools.session_scope import session_reader  # Hermes core
+
+        return session_reader()
+    except ImportError:
+        # Hermes without session scope: only a process with no messaging gateway
+        # (local CLI) can be treated as the operator.
+        return _PUBLIC if os.environ.get("_HERMES_GATEWAY") == "1" else None
+    except Exception as e:  # fail closed
+        logger.debug("skmemory: session scope failed (%s); treating as public", e)
+        return _PUBLIC
+
+
+def _drop_sensitive(memories):
+    """Remove memories whose tags are sensitive or owner-only (auto-injection must never carry them)."""
+    try:
+        from skmemory.hooks.sensitivity import is_owner_only, is_sensitive
+    except Exception as e:  # cannot classify, so inject nothing
+        logger.debug("skmemory: sensitivity filter unavailable (%s)", e)
+        return []
+    return [
+        m
+        for m in memories or []
+        if not (
+            is_sensitive(getattr(m, "tags", None))
+            or is_owner_only(getattr(m, "tags", None))
+        )
+    ]
 
 
 def _err(msg: str) -> str:
@@ -95,6 +136,7 @@ class SkmemoryProvider(MemoryProvider):
     # -- availability (must NOT import skmemory — that can hard-raise) -------
     def is_available(self) -> bool:
         import importlib.util
+
         return importlib.util.find_spec("skmemory") is not None
 
     # -- config -------------------------------------------------------------
@@ -126,7 +168,9 @@ class SkmemoryProvider(MemoryProvider):
     def initialize(self, session_id: str, **kwargs) -> None:
         hermes_home = Path(kwargs.get("hermes_home") or os.path.expanduser("~/.hermes"))
         self._cfg = self._load_config(hermes_home)
-        self._agent = str(self._cfg.get("agent") or kwargs.get("agent_identity") or "hermes")
+        self._agent = str(
+            self._cfg.get("agent") or kwargs.get("agent_identity") or "hermes"
+        )
         self._read_only = bool(self._cfg.get("read_only"))
         # Writes are enabled for primary sessions only. Cron/subagent contexts
         # are skipped (their system prompts would corrupt the user's memory), and
@@ -144,7 +188,8 @@ class SkmemoryProvider(MemoryProvider):
             if not agent_dir.is_dir():
                 logger.warning(
                     "skmemory: linked skcapstone agent dir not found: %s — recall "
-                    "may be empty (not creating it in linked mode)", agent_dir,
+                    "may be empty (not creating it in linked mode)",
+                    agent_dir,
                 )
             self._mode = "linked"
         else:
@@ -178,11 +223,17 @@ class SkmemoryProvider(MemoryProvider):
 
         vector = self._build_vector_backend()
         try:
-            self.store = MemoryStore(vector=vector)  # SQLite primary + optional pg vector
+            self.store = MemoryStore(
+                vector=vector
+            )  # SQLite primary + optional pg vector
             backend = "pgvector" if vector is not None else "sqlite"
             logger.info(
                 "skmemory: initialized (mode=%s, agent=%s, backend=%s, read_only=%s, home=%s)",
-                self._mode, self._agent, backend, self._read_only, skcap_home,
+                self._mode,
+                self._agent,
+                backend,
+                self._read_only,
+                skcap_home,
             )
         except Exception as e:
             logger.warning("skmemory: MemoryStore init failed: %s", e)
@@ -193,6 +244,7 @@ class SkmemoryProvider(MemoryProvider):
             return None
         try:
             from skmemory.backends.pgvector_backend import PGVectorBackend
+
             kw: Dict[str, Any] = {"agent": self._agent}
             if self._cfg.get("dsn"):
                 kw["dsn"] = self._cfg["dsn"]
@@ -206,7 +258,8 @@ class SkmemoryProvider(MemoryProvider):
         except Exception as e:
             logger.warning(
                 "skmemory: pgvector requested but unavailable (%s); "
-                "falling back to SQLite keyword search", e,
+                "falling back to SQLite keyword search",
+                e,
             )
             return None
 
@@ -219,18 +272,37 @@ class SkmemoryProvider(MemoryProvider):
         )
 
     # -- recall / write -----------------------------------------------------
+    def _scoped_search(self, query: str, limit: int, reader):
+        """store.search under the caller's reader. A non-owner reader on a skmemory that
+        cannot take ``reader`` returns nothing rather than an unscoped owner search."""
+        if reader is None:
+            return self.store.search(query, limit=limit)
+        try:
+            return self.store.search(query, limit=limit, reader=reader)
+        except TypeError:
+            logger.warning(
+                "skmemory: store.search has no reader support; refusing non-owner search"
+            )
+            return []
+
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         if self.store is None or not query.strip():
             return ""
         try:
-            results = self.store.search(query, limit=5)
+            results = _drop_sensitive(self._scoped_search(query, 5, _session_reader()))
         except Exception as e:
             logger.debug("skmemory prefetch failed: %s", e)
             return ""
         return self._format_memories(results, header="Relevant memories")
 
-    def sync_turn(self, user_content: str, assistant_content: str, *,
-                  session_id: str = "", messages: Optional[List[Dict[str, Any]]] = None) -> None:
+    def sync_turn(
+        self,
+        user_content: str,
+        assistant_content: str,
+        *,
+        session_id: str = "",
+        messages: Optional[List[Dict[str, Any]]] = None,
+    ) -> None:
         # Sessions write to memory: each completed turn is captured as a
         # SHORT-term snapshot tagged with the session. skmemory's own
         # synthesis/consolidation (skwhisper, memory_synthesize_*) rolls these
@@ -244,13 +316,18 @@ class SkmemoryProvider(MemoryProvider):
             # Label the assistant turn with THIS agent's name, not a hardcoded
             # one — the plugin ships to any Hermes user, not just Lumina.
             speaker = (self._agent or "assistant").capitalize()
-            content = f"User: {user_content}\n\n{speaker}: {assistant_content}".strip()[:4000]
+            content = f"User: {user_content}\n\n{speaker}: {assistant_content}".strip()[
+                :4000
+            ]
             tags = ["hermes"]
             if session_id:
                 tags.append(f"session:{session_id}")
             self.store.snapshot(
-                title=title, content=content, tags=tags,
-                source="hermes", source_ref=session_id or "",
+                title=title,
+                content=content,
+                tags=tags,
+                source="hermes",
+                source_ref=session_id or "",
             )
         except Exception as e:
             logger.debug("skmemory sync_turn write failed: %s", e)
@@ -268,7 +345,10 @@ class SkmemoryProvider(MemoryProvider):
             if tool_name == "skmemory_search":
                 q = (args or {}).get("query", "")
                 limit = int((args or {}).get("limit", 5) or 5)
-                results = self.store.search(q, limit=limit)
+                reader = _session_reader()
+                results = self._scoped_search(q, limit, reader)
+                if reader is not None:
+                    results = _drop_sensitive(results)
                 return json.dumps({"results": self._memories_to_dicts(results)})
             if tool_name == "skmemory_store":
                 if self._read_only:
@@ -279,7 +359,10 @@ class SkmemoryProvider(MemoryProvider):
                 title = (args or {}).get("title") or content[:60]
                 tags = (args or {}).get("tags") or None
                 mem = self.store.snapshot(
-                    title=title, content=content, tags=tags, source="hermes",
+                    title=title,
+                    content=content,
+                    tags=tags,
+                    source="hermes",
                 )
                 return json.dumps({"stored": True, "id": getattr(mem, "id", None)})
         except Exception as e:
@@ -295,11 +378,13 @@ class SkmemoryProvider(MemoryProvider):
     def _memories_to_dicts(memories) -> List[Dict[str, Any]]:
         out = []
         for m in memories or []:
-            out.append({
-                "title": getattr(m, "title", ""),
-                "content": (getattr(m, "content", "") or "")[:500],
-                "id": getattr(m, "id", None),
-            })
+            out.append(
+                {
+                    "title": getattr(m, "title", ""),
+                    "content": (getattr(m, "content", "") or "")[:500],
+                    "id": getattr(m, "id", None),
+                }
+            )
         return out
 
     def _format_memories(self, memories, *, header: str) -> str:
