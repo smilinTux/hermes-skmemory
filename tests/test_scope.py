@@ -100,3 +100,81 @@ def test_missing_session_scope(monkeypatch, gateway, expected):
     mod = _load(monkeypatch, reader="MISSING")
     monkeypatch.setenv("_HERMES_GATEWAY", gateway)
     assert mod._session_reader() == expected
+
+
+# -- write side: sync_turn and skmemory_store ---------------------------------
+
+
+class WStore:
+    def __init__(self):
+        self.writes = []
+
+    def snapshot(self, **kw):
+        self.writes.append(kw)
+        return types.SimpleNamespace(id="m1")
+
+
+def _wprov(mod):
+    p = _prov(mod, WStore())
+    p._writable = True
+    p._read_only = False
+    return p
+
+
+def test_owner_sync_turn_writes(monkeypatch):
+    mod = _load(monkeypatch)
+    p = _wprov(mod)
+    p.sync_turn("hi", "hello", session_id="s1")
+    assert len(p.store.writes) == 1
+
+
+@pytest.mark.parametrize("reader", ["@public", "channel:42"])
+def test_non_owner_sync_turn_writes_nothing(monkeypatch, reader):
+    monkeypatch.delenv("HERMES_SKMEMORY_WRITE_NONOWNER", raising=False)
+    mod = _load(monkeypatch, reader=reader)
+    p = _wprov(mod)
+    p.sync_turn("hi", "hello", session_id="s1")
+    assert p.store.writes == []
+
+
+def test_non_owner_store_tool_writes_nothing(monkeypatch):
+    mod = _load(monkeypatch, reader="channel:42")
+    p = _wprov(mod)
+    out = p.handle_tool_call("skmemory_store", {"content": "x"})
+    assert p.store.writes == [] and "error" in out.lower()
+
+
+def test_owner_store_tool_writes(monkeypatch):
+    mod = _load(monkeypatch)
+    p = _wprov(mod)
+    p.handle_tool_call("skmemory_store", {"content": "x"})
+    assert len(p.store.writes) == 1
+
+
+def test_scope_failure_writes_nothing(monkeypatch):
+    mod = _load(monkeypatch)
+    monkeypatch.setattr(
+        mod, "_session_reader", lambda: (_ for _ in ()).throw(RuntimeError("boom"))
+    )
+    p = _wprov(mod)
+    p.sync_turn("hi", "hello")
+    p.handle_tool_call("skmemory_store", {"content": "x"})
+    assert p.store.writes == []
+
+
+def test_missing_scope_in_gateway_writes_nothing(monkeypatch):
+    mod = _load(monkeypatch, reader="MISSING")
+    monkeypatch.setenv("_HERMES_GATEWAY", "1")
+    p = _wprov(mod)
+    p.sync_turn("hi", "hello")
+    assert p.store.writes == []
+
+
+def test_optin_env_does_not_write_without_audience_support(monkeypatch):
+    # skmemory's snapshot() has no audience field, so the opt-in does not exist:
+    # the env var must not re-open the owner store to a group chat.
+    monkeypatch.setenv("HERMES_SKMEMORY_WRITE_NONOWNER", "1")
+    mod = _load(monkeypatch, reader="channel:42")
+    p = _wprov(mod)
+    p.sync_turn("hi", "hello")
+    assert p.store.writes == []
