@@ -20,6 +20,13 @@ derived from commit messages and the diffs they carry, not from a log kept at th
   closed: no session scope inside a gateway means `@public`, an old skmemory without `reader`
   support returns nothing for a non-owner, and a missing sensitivity module injects nothing
   (SKMEM-P0-23).
+- Write side of the same rule: `sync_turn()` and the `skmemory_store` tool only write in an
+  owner session (session reader `None`). A group chat or non-owner DM is no longer snapshotted
+  into the owner store. Fails closed on any scope error. There is no opt-in: skmemory's
+  `snapshot()` cannot set an audience (`context_tag`) at write time, so a scoped non-owner
+  write is not possible yet (SKMEM-P0-23).
+- `conftest.py` stubs `agent.memory_provider` whenever Hermes core is not importable, so
+  `pytest` runs without hermes-agent on the path.
 - Tests in `tests/test_scope.py` (Hermes core stubbed), run by `pytest` from the repo root.
 
 ### Added

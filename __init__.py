@@ -61,6 +61,21 @@ def _session_reader():
         return _PUBLIC
 
 
+def _owner_may_write() -> bool:
+    """True only for an owner session (reader None). Fails closed on any error.
+
+    The write side of the same rule as the read side. skmemory's ``snapshot()`` has
+    no audience field (``context_tag`` defaults to owner-only and cannot be set at
+    write time), so a non-owner turn cannot be stored with a scoped audience. It is
+    therefore not stored at all: no opt-in exists.
+    """
+    try:
+        return _session_reader() is None
+    except Exception as e:
+        logger.debug("skmemory: write scope check failed (%s); not writing", e)
+        return False
+
+
 def _drop_sensitive(memories):
     """Remove memories whose tags are sensitive or owner-only (auto-injection must never carry them)."""
     try:
@@ -311,6 +326,8 @@ class SkmemoryProvider(MemoryProvider):
             return
         if not (user_content or "").strip() and not (assistant_content or "").strip():
             return
+        if not _owner_may_write():
+            return  # group chat / non-owner DM: never written as owner memory
         try:
             title = ((user_content or assistant_content or "").strip()[:60]) or "turn"
             # Label the assistant turn with THIS agent's name, not a hardcoded
@@ -353,6 +370,8 @@ class SkmemoryProvider(MemoryProvider):
             if tool_name == "skmemory_store":
                 if self._read_only:
                     return _err("skmemory is read-only (linked store); writes disabled")
+                if not _owner_may_write():
+                    return _err("skmemory writes are disabled in a non-owner session")
                 content = (args or {}).get("content", "")
                 if not content.strip():
                     return _err("content is required")
