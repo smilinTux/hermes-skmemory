@@ -11,6 +11,17 @@ derived from commit messages and the diffs they carry, not from a log kept at th
 
 ## [Unreleased]
 
+### Security
+
+- `prefetch()` and the `skmemory_search` tool now search under the Hermes session reader
+  (`tools.session_scope.session_reader`, which honours `HERMES_MEMORY_OWNER` and
+  `HERMES_MEMORY_OWNER_CHATS`) instead of always running an owner search. Auto-injected
+  results drop memories flagged by `skmemory.hooks.sensitivity` (sacred, owner-only). Fails
+  closed: no session scope inside a gateway means `@public`, an old skmemory without `reader`
+  support returns nothing for a non-owner, and a missing sensitivity module injects nothing
+  (SKMEM-P0-23).
+- Tests in `tests/test_scope.py` (Hermes core stubbed), run by `pytest` from the repo root.
+
 ### Added
 
 - `SECURITY.md`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `CHANGELOG.md`, and `LICENSE`
