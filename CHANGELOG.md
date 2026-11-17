@@ -5,11 +5,88 @@ All notable changes to `hermes-skmemory` (the plugin Hermes loads as `skmemory`)
 Format loosely follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). Versions
 refer to the `version:` field in `plugin.yaml`, which is the only version this repo has:
 there is no `pyproject.toml`, no tag series, and nothing published to a package index.
+skmemory itself is versioned and published separately.
 
 This file was reconstructed from git history on 2026-08-14. Entries before that date are
 derived from commit messages and the diffs they carry, not from a log kept at the time.
 
 ## [Unreleased]
+
+Nothing yet.
+
+## [0.2.0] - 2026-11-17
+
+Breaking: the plugin no longer runs skmemory inside Hermes. Install skmemory as its own
+tool (`uv tool install skmemory` or `pipx install skmemory`) before upgrading. The removed
+config keys below are ignored if still present.
+
+### Changed
+
+- **Transport.** The provider starts the `skmemory-mcp` stdio server as a child process,
+  one per provider instance (so one per Hermes profile), and speaks MCP JSON-RPC to it
+  (`McpClient`). It never imports skmemory. The server is found via config `mcp_command`,
+  env `SKMEMORY_MCP_BIN`, `PATH`, then `~/.local/bin` and `~/.skenv/bin`.
+- **Recall** uses the server's `memory_auto_context` with keywords extracted from the user
+  message (token budget 800). The sensitivity filter that v0.1 ran in-process
+  (`skmemory.hooks.sensitivity`) is now applied by the server, which drops sensitive-tagged
+  rows from auto-injected context in owner turns.
+- `skmemory_search` calls `memory_search` (limit capped at 20, result rows now include
+  `tags`); `skmemory_store` and the per-turn `sync_turn` write call `memory_store`
+  (per-turn: `layer: short-term`, tags `hermes` and `session:<id>`, `source: hermes`).
+- **Isolated mode** gives the child an explicit `SKMEMORY_HOME` for
+  `$HERMES_HOME/.skmemory/agents/<agent>/` and runs on skmemory's local tier only (flat
+  JSON plus SQLite/FTS5, offline). **Linked mode** (`skcapstone_home` + `agent`) serves
+  an existing skcapstone agent with the node's tiers; Hermes's `SKMEMORY_PG_DSN` is passed
+  through, or config `dsn` is used.
+- `is_available()` now checks that `skmemory-mcp` can be found, instead of
+  `find_spec("skmemory")`.
+- The plugin no longer sets process-wide `SKAGENT` / `SKCAPSTONE_HOME` in Hermes's own
+  environment; those go to the child only.
+- `plugin.yaml`: `version: 0.2.0`, `requires_hermes: ">=0.21.6"`, `provides_tools: []`
+  (provider tools come through `get_tool_schemas()`), `optional_env` lists the four env
+  fallbacks.
+- Docs (`README.md`, `SOP.md`, `SECURITY.md`, `CONTRIBUTING.md`) rewritten for v0.2, with
+  personal hostnames and paths removed.
+
+### Added
+
+- `queue_prefetch`: recall runs in a background thread and is consumed once by `prefetch`.
+- `get_config_schema` / `save_config` for `hermes memory setup`.
+- `backup_paths()` (returns nothing extra: the isolated store is already under
+  `$HERMES_HOME`, so `hermes backup` covers it).
+- Config keys `mcp_command`, `assume_owner` (env `SKMEMORY_ASSUME_OWNER`) and `timeout`
+  (default 20 s per MCP call).
+- A per-call timeout that returns a tool error, and restart of a dead child on the next call.
+- Tests: `tests/test_provider.py` (20 tests against `tests/fake_skmemory_mcp.py`) and
+  `tests/test_integration.py` (real `skmemory-mcp`, skipped when absent). These replace
+  `tests/test_scope.py`.
+- CI: a pytest step, and the AST contract check now also requires `queue_prefetch`,
+  `get_config_schema`, `save_config` and `backup_paths` and fails on any `import skmemory`.
+
+### Removed
+
+- `pip_dependencies: [skmemory]`. skmemory is not installed into Hermes's venv.
+- In-process use of `MemoryStore`, `PGVectorBackend` and `skmemory.hooks.sensitivity`.
+- Config keys `vector_backend`, `embed_url`, `embed_model`, and env `SKMEMORY_VECTOR_BACKEND`,
+  `SKMEMORY_DSN`, `SKMEMORY_EMBED_URL`, `SKMEMORY_EMBED_MODEL`. Search tiers are configured
+  in skmemory. (`dsn` remains, now as the child's `SKMEMORY_PG_DSN`.)
+
+### Security
+
+- The child's environment is filtered: inherited `SKMEMORY_*`, `SKCAPSTONE_*`, `SKAGENT*`
+  and `SK_DEFAULT_AGENT` are stripped before the plugin sets its own, so an isolated store
+  can never open another agent's store on an skcapstone node.
+- Owner and reader rules carried over: reader from `tools.session_scope.session_reader`;
+  without it the CLI is the owner and a gateway is `@public`, unless `assume_owner` is set;
+  scope errors fail closed to `@public`. Non-owner turns search under their reader and never
+  write.
+- New in `SECURITY.md`: the server runs with the user's privileges, the binary lookup order
+  is a trust boundary, and `assume_owner` turns off the gateway fail-closed default.
+
+## 0.1.x on master, never versioned (2026-08-14 to 2026-11-08)
+
+These landed on `master` after 0.1.0 while `plugin.yaml` still said `0.1.0`. They describe
+the in-process v0.1 design that 0.2.0 replaced.
 
 ### Security
 
@@ -28,6 +105,7 @@ derived from commit messages and the diffs they carry, not from a log kept at th
 - `conftest.py` stubs `agent.memory_provider` whenever Hermes core is not importable, so
   `pytest` runs without hermes-agent on the path.
 - Tests in `tests/test_scope.py` (Hermes core stubbed), run by `pytest` from the repo root.
+  (Replaced by `tests/test_provider.py` in 0.2.0.)
 
 ### Added
 
