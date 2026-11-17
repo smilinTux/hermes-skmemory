@@ -2,12 +2,12 @@
 
 **[skmemory](https://github.com/smilinTux/skmemory) as a
 [Hermes Agent](https://github.com/NousResearch/hermes-agent) memory provider, with skmemory
-kept outside Hermes.** The plugin starts the `skmemory-mcp` stdio server as a child process
-and talks to it over MCP. It never imports skmemory, binds no port and has no CLI.
+kept outside Hermes.** **Maturity tier: T0, N/A (no key material).**
 
-**Maturity tier: T0, N/A (no key material).** Not a crypto component. In linked mode it can
-pass a Postgres DSN (which contains a password) through to the child. **License:**
-GPL-3.0-or-later. **Operational contract:** [`SOP.md`](./SOP.md).
+The plugin starts the `skmemory-mcp` stdio server as a child process and talks to it over
+MCP. It never imports skmemory, binds no port and has no CLI. Not a crypto component; in
+linked mode it can pass a Postgres DSN (which contains a password) through to the child.
+**License:** GPL-3.0-or-later. **Operational contract:** [`SOP.md`](./SOP.md).
 
 The default needs no infrastructure: a private store inside `$HERMES_HOME` on skmemory's
 local tier (flat JSON files plus SQLite/FTS5), offline, no Postgres, no embedding server.
