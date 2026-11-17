@@ -60,8 +60,10 @@ config keys below are ignored if still present.
 - Tests: `tests/test_provider.py` (20 tests against `tests/fake_skmemory_mcp.py`) and
   `tests/test_integration.py` (real `skmemory-mcp`, skipped when absent). These replace
   `tests/test_scope.py`.
-- CI: a pytest step, and the AST contract check now also requires `queue_prefetch`,
-  `get_config_schema`, `save_config` and `backup_paths` and fails on any `import skmemory`.
+- CI: a pytest step. The AST contract check now also requires `queue_prefetch`,
+  `get_config_schema`, `save_config` and `backup_paths` and fails on any import of
+  skmemory (replacing the old `find_spec` check). The manifest check now fails if
+  `pip_dependencies` declares skmemory and requires `requires_hermes`.
 
 ### Removed
 

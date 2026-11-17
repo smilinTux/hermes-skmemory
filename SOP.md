@@ -214,8 +214,8 @@ suite runs without hermes-agent. Two files:
 |---|---|
 | `python -m compileall -q .` | a syntax error in the module Hermes imports at startup |
 | `ruff check .` (pinned `ruff==0.15.4`, default rule set) | undefined names, unused imports, real logic errors |
-| AST contract check | `register()` gone or no longer calling `register_memory_provider`; `SkmemoryProvider` no longer subclassing `MemoryProvider`; a required provider method removed or renamed; any `import skmemory`; either tool name changed |
-| manifest check | `name: skmemory`, `kind: exclusive`, a `version:`, and **no** `skmemory` in `pip_dependencies` |
+| AST contract check | `register()` gone or no longer calling `register_memory_provider`; `SkmemoryProvider` no longer subclassing `MemoryProvider`; any of the thirteen provider methods in section 7 removed or renamed; any `import skmemory` (static or `importlib`); either tool name changed |
+| manifest check | `name: skmemory`, `kind: exclusive`, a `version:`, a `requires_hermes:`, and **no** `skmemory` in `pip_dependencies` |
 | `python -m pytest -q` | the provider behaviour above (integration test skips) |
 
 The green bar for a merge is all five steps green. The integration test is the only one
