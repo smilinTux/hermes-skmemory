@@ -1,15 +1,39 @@
 name: skmemory
-version: 0.1.0
+version: 0.2.0
 description: >-
-  skmemory as a Hermes memory backend. SQLite out-of-the-box (zero infra,
-  keyword recall) with an opt-in pgvector toggle for semantic/RAG search against
-  a Postgres+pgvector store. A self-contained on-ramp into the SKWorld ecosystem:
-  one `pip install skmemory`, no Docker, no embedding server required.
-author: "SKWorld (Chef + Lumina)"
+  skmemory as a Hermes memory provider, with skmemory kept outside Hermes: the
+  plugin runs the skmemory-mcp stdio server as a child process and calls it over
+  MCP. Default is a private store in HERMES_HOME on skmemory's local tier (flat
+  JSON files plus SQLite/FTS5, offline, no Postgres). Linked mode serves an
+  existing skcapstone agent with whatever tiers the node has.
+author: "smilinTux"
 # `exclusive`: memory category has exactly one active provider, selected via the
 # `memory.provider` config key. The memory subsystem loads it; the general plugin
 # scanner skips `exclusive` plugins.
 kind: exclusive
-# `hermes memory setup` auto-installs these via uv/pip when the provider is chosen.
-pip_dependencies:
-  - skmemory
+# MemoryProvider with queue_prefetch, get_config_schema/save_config and backup_paths.
+requires_hermes: ">=0.21.6"
+# No pip_dependencies on purpose: skmemory is NOT installed into Hermes's venv.
+# Install it as its own tool (`uv tool install skmemory` or `pipx install skmemory`)
+# so `skmemory-mcp` is on PATH, or set mcp_command in $HERMES_HOME/skmemory.json.
+# Memory-provider tools come through get_tool_schemas(), not ctx.register_tool(),
+# so nothing is declared here (skmemory_search, skmemory_store).
+provides_tools: []
+requires_env: []
+optional_env:
+  - name: SKMEMORY_MCP_BIN
+    description: "Path to the skmemory-mcp server (default: found on PATH, then ~/.local/bin, ~/.skenv/bin)"
+    prompt: "Path to skmemory-mcp (or empty to search PATH)"
+    password: false
+  - name: SKMEMORY_LINK_HOME
+    description: "Linked mode: an existing skcapstone home to serve instead of a private store"
+    prompt: "skcapstone home for linked mode (or empty)"
+    password: false
+  - name: SKMEMORY_READ_ONLY
+    description: "'true' exposes recall only: no store tool, no per-turn writes"
+    prompt: "Read-only? (true/false)"
+    password: false
+  - name: SKMEMORY_ASSUME_OWNER
+    description: "'true' on a single-user install whose Hermes has no session scopes: every turn counts as the owner's"
+    prompt: "Assume every turn is the owner's? (true/false)"
+    password: false
