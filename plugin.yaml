@@ -6,7 +6,7 @@ description: >-
   MCP. Default is a private store in HERMES_HOME on skmemory's local tier (flat
   JSON files plus SQLite/FTS5, offline, no Postgres). Linked mode serves an
   existing skcapstone agent with whatever tiers the node has.
-author: "SKWorld (Chef + Lumina)"
+author: "smilinTux"
 # `exclusive`: memory category has exactly one active provider, selected via the
 # `memory.provider` config key. The memory subsystem loads it; the general plugin
 # scanner skips `exclusive` plugins.
