@@ -14,6 +14,24 @@ derived from commit messages and the diffs they carry, not from a log kept at th
 
 Nothing yet.
 
+## [0.2.2] - 2026-11-25
+
+### Fixed
+
+- **0.2.0 lost every write on Hermes builds that set `PYTHONPATH`.** 0.2.0 copied Hermes's
+  environment into the child, including Hermes's own `PYTHONPATH` (its source tree and its
+  Python 3.14 site-packages). `skmemory-mcp`, on another Python, crashed on start importing
+  `pydantic_core`, so every turn write and recall failed, logged only at debug level. Found
+  on the sk Hermes fork while building the sksidekick image. 0.2.1's environment allowlist
+  already fixed the cause; 0.2.2 adds a regression test that no `PYTHON*` variable reaches
+  the child, and makes the next such failure visible:
+- The child's stderr is appended to `$HERMES_HOME/logs/skmemory-mcp-<agent>.log` (mode 0600,
+  rotated once at 5 MB) instead of being discarded. The "skmemory-mcp exited" error names
+  that file.
+- Recall, turn-write and tool failures are logged at `WARNING` on the first failure of each
+  kind, then at debug until that kind succeeds again (logged at info), so an outage is
+  visible without a warning on every turn.
+
 ## [0.2.1] - 2026-11-25
 
 Fixes from the Hermes plugin catalog review
