@@ -31,7 +31,7 @@ not reach us, not that it was dismissed. Please chase it.
 - `__init__.py`, `plugin.yaml`, and anything else in this repo.
 - The owner/reader decision (`_session_reader`, `assume_owner`) and the write gates
   (`read_only`, `agent_context`, owner turn).
-- The environment handed to the child (`_child_env`), and how `dsn` is resolved and passed.
+- The environment handed to the child (`_child_env`, an allowlist), and how the linked-mode DSN is read and passed.
 - The MCP client (`McpClient`): framing, timeouts, restart, process cleanup.
 - Mode selection: isolated versus linked.
 - Anything this plugin can do to the Hermes process it is loaded into.
@@ -52,7 +52,7 @@ not reach us, not that it was dismissed. Please chase it.
 
 | Version | Status | Fixes |
 |---|---|---|
-| `master` (currently `0.2.0` per `plugin.yaml`) | Active, incubating | Yes |
+| `master` (currently `0.2.1` per `plugin.yaml`) | Active, incubating | Yes |
 | `0.1.x` (in-process skmemory) | Unsupported | Update to `master` |
 
 There are no published artifacts, no tag series, and nothing on PyPI for this plugin, so
@@ -63,14 +63,14 @@ and expected to break.
 
 **This repo stores no secret and must never store one.** It may, however, **pass** one.
 
-A Postgres DSN (with password) reaches the child as `SKMEMORY_PG_DSN` in two ways: config
-`dsn` in `$HERMES_HOME/skmemory.json` (any mode), or, in linked mode only, Hermes's own
-`SKMEMORY_PG_DSN` passed through. Isolated mode with no `dsn` passes none, and strips any
-inherited one.
+A Postgres DSN (with password) reaches the child as `SKMEMORY_PG_DSN` in linked mode only,
+read from Hermes's secret store with `agent.secret_scope.get_secret("SKMEMORY_PG_DSN")`, so
+it follows the active profile's secret scope like any other Hermes credential. It is
+declared in `plugin.yaml` `optional_env` with `password: true`. Isolated mode never passes
+a DSN.
 
-- **A DSN in `skmemory.json` is at rest in a plain JSON file**, protected only by filesystem
-  permissions. Check them: `ls -l "$HERMES_HOME/skmemory.json"`. Prefer the environment
-  route for linked mode.
+- **There is no DSN in `skmemory.json`.** Since 0.2.1 a `dsn` key there is ignored with a
+  warning; remove it and set the secret instead.
 - **Never commit a real DSN to this repo.** Every example must stay a placeholder.
 - **The plugin does not log its config or the child env.** The child's stderr is discarded,
   so skmemory's own error output does not reach the Hermes log through this plugin.
@@ -91,12 +91,16 @@ a permanently red gate gets ignored. Never allowlist a real finding.
   directory or those two fallback paths can make Hermes run their code. That is the same
   trust boundary as Hermes's own `PATH`, but it is real: on a shared machine, set an
   absolute `mcp_command` owned by the user.
-- **It inherits a filtered environment.** Every inherited `SKMEMORY_*`, `SKCAPSTONE_*`,
-  `SKAGENT*` and `SK_DEFAULT_AGENT` variable is removed, then the plugin sets its own agent
-  selectors and, in isolated mode, an explicit `SKMEMORY_HOME`. This is what stops a Hermes
-  running on an skcapstone node from opening that node's store in isolated mode. **All other
-  variables are inherited unchanged**, including API keys and tokens in Hermes's
-  environment. skmemory is trusted with them the same way Hermes is.
+- **It gets an allowlisted environment.** Since 0.2.1 the child inherits only `PATH`,
+  `HOME`, `USER`, `LOGNAME`, `LANG`, `LANGUAGE`, `LC_*`, `TZ`, `TMPDIR`/`TMP`/`TEMP` and a few
+  Windows basics (`SYSTEMROOT`, `USERPROFILE`, `APPDATA`, ...). The plugin then sets the
+  agent selectors, `SKCAPSTONE_HOME`, in isolated mode an explicit `SKMEMORY_HOME`, and in
+  linked mode the DSN secret. **No other variable reaches it**: no provider API keys, no
+  tokens, and no inherited `SKMEMORY_*`/`SKCAPSTONE_*`/`SKAGENT*` selector that could open
+  someone else's store. (0.2.0 passed everything except those SK selectors.)
+- **Pin skmemory.** The child sees every turn. Install the tested version
+  (`uv tool install skmemory==0.11.173`); `initialize` logs a warning when the server's `serverInfo`
+  is not skmemory `>=0.11.173,<0.12`.
 - **It is bounded in time, not in resources.** Each call has a timeout (default 20 s); on
   timeout or exit the child is closed and restarted on the next call. There is no memory or
   CPU limit on the child.
@@ -105,10 +109,13 @@ a permanently red gate gets ignored. Never allowlist a real finding.
 
 ## Owner turns, readers and writes
 
-A turn is an owner turn only when Hermes says so. On sk Hermes builds the reader comes from
-`tools.session_scope.session_reader()`. On stock Hermes the CLI is the owner and a gateway
-process (`_HERMES_GATEWAY=1`) is `@public`, unless `assume_owner` is set. Any error fails
-closed to `@public`.
+A turn is an owner turn only when Hermes says so. Upstream Hermes has no public per-turn
+scope yet (proposed in
+[hermes-agent#160124](https://github.com/NousResearch/hermes-agent/issues/160124)), so on
+stock Hermes the CLI is the owner and a gateway process (`_HERMES_GATEWAY=1`) is `@public`,
+unless `assume_owner` is set. Builds that carry a `tools.session_scope` module (not in
+upstream; the SK estate's fork) supply the reader from there. Any error fails closed to
+`@public`.
 
 - Non-owner turns pass their `reader` to the server, which enforces the audience. They
   never write: not per-turn, not through `skmemory_store`.

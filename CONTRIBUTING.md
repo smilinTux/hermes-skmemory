@@ -57,7 +57,7 @@ paths. Add a test there for any behaviour change.
 `~/.skenv/bin`). To run it, install skmemory as a tool first:
 
 ```bash
-uv tool install skmemory          # or: pipx install skmemory
+uv tool install skmemory==0.11.173   # or: pipx install skmemory==0.11.173
 python -m pytest -q tests/test_integration.py
 ```
 

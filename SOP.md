@@ -47,7 +47,7 @@ per-user sksidekick edition and by anyone installing from the Hermes plugin cata
   own process. The plugin calls the server tools `memory_auto_context`, `memory_search`
   and `memory_store`.
 - **It never imports skmemory**, and declares no `pip_dependencies`. skmemory is installed
-  outside Hermes (`uv tool install skmemory` or `pipx install skmemory`).
+  outside Hermes (`uv tool install skmemory==0.11.173`, or the same pin with `pipx`).
 - **It does not bind a port** or serve anything. The child is spoken to over its stdio only.
 - **In linked mode it creates nothing** in the target skcapstone store. It warns if the agent
   directory is missing and carries on.
@@ -104,7 +104,7 @@ flowchart TD
 | `__init__.py` `initialize()` / `_child_env()` | Mode selection, store scaffold, server lookup, and the environment the child gets. |
 | `__init__.py` `class McpClient` | The stdio transport: `initialize` handshake, `tools/call`, timeout, restart. |
 | `__init__.py` `_session_reader()` | Who the turn is for. `None` means owner. |
-| `plugin.yaml` | Manifest. `name: skmemory`, `kind: exclusive`, `version: 0.2.0`, `requires_hermes: ">=0.21.6"`, no `pip_dependencies`. |
+| `plugin.yaml` | Manifest. `name: skmemory`, `kind: exclusive`, `version: 0.2.1`, `requires_hermes: ">=0.21.6"`, no `pip_dependencies`. |
 
 Note that the **plugin directory and manifest name is `skmemory`**, not
 `hermes-skmemory`. The repo is `hermes-skmemory`; the thing Hermes loads is `skmemory`.
@@ -140,16 +140,18 @@ lazily on the first memory call, with `cwd=$HERMES_HOME` and stderr discarded. T
 does the MCP `initialize` handshake (protocol `2025-06-18`), then sends `tools/call`
 requests one at a time.
 
-Before the child starts, every inherited variable starting with `SKMEMORY_`, `SKCAPSTONE_`,
-`SKAGENT` or `SK_DEFAULT_AGENT` is removed. Then the plugin sets `SKCAPSTONE_HOME`,
-`SKAGENT`, `SKMEMORY_AGENT` and `SKCAPSTONE_AGENT` (all to the configured `agent`), and:
+The child's environment is built from an allowlist (`_child_env`): only `PATH`, `HOME`,
+`USER`, `LOGNAME`, `LANG`, `LANGUAGE`, `LC_*`, `TZ`, `TMPDIR`/`TMP`/`TEMP` and a few Windows
+basics are inherited. Then the plugin sets `SKCAPSTONE_HOME`, `SKAGENT`, `SKMEMORY_AGENT`
+and `SKCAPSTONE_AGENT` (all to the configured `agent`), and:
 
-- **isolated:** `SKMEMORY_HOME=$HERMES_HOME/.skmemory/agents/<agent>`, and no DSN unless
-  `dsn` is set in the config file;
-- **linked:** no `SKMEMORY_HOME`, and `SKMEMORY_PG_DSN` from Hermes's own environment is
-  passed through (or config `dsn` wins if set).
+- **isolated:** `SKMEMORY_HOME=$HERMES_HOME/.skmemory/agents/<agent>`, and never a DSN;
+- **linked:** no `SKMEMORY_HOME`, and `SKMEMORY_PG_DSN` read from Hermes's secret store
+  (`agent.secret_scope.get_secret`) when it is set there.
 
-Everything else in Hermes's environment is inherited as is (see `SECURITY.md`).
+Nothing else from Hermes's environment reaches the child, so no provider keys (see
+`SECURITY.md`). On `initialize` the plugin reads `serverInfo` and warns when it is not
+skmemory `>=0.11.173,<0.12` (`TESTED_SKMEMORY`).
 
 ### The dotted store directory
 
@@ -169,7 +171,7 @@ No build step. A plain Python package directory loaded from source by Hermes. No
 Install into a Hermes:
 
 ```bash
-uv tool install skmemory           # or: pipx install skmemory  (puts skmemory-mcp on PATH)
+uv tool install skmemory==0.11.173   # or pipx; puts skmemory-mcp on PATH
 hermes plugins install https://github.com/smilinTux/hermes-skmemory
 # lands at $HERMES_HOME/plugins/skmemory  (directory name = manifest name)
 hermes memory setup                # pick "skmemory"
@@ -255,14 +257,14 @@ and restart. Memory recall stops; nothing else is affected.
 own `skmemory.json` and its own child. Updating one does not update the others.
 
 **Version:** there is no `pyproject.toml`. The version is the literal `version:` field in
-`plugin.yaml` (`0.2.0`).
+`plugin.yaml` (`0.2.1`).
 
 ### Front-end / Exposure
 
 **N/A - no network surface.** The plugin binds no address, listens on no port, and answers
 no route. It talks to its child over pipes. Any outbound connection (Postgres, an embedding
 endpoint) is made by **skmemory** in the child, from skmemory's own config and the DSN this
-plugin passes through. Isolated mode with no `dsn` makes none.
+plugin passes through in linked mode. Isolated mode makes none.
 
 ---
 
@@ -277,13 +279,15 @@ env fallbacks, and an empty-string or null value in the file is ignored rather t
 | `skcapstone_home` | `SKMEMORY_LINK_HOME` | `""` | non-empty selects **linked** mode against an existing skcapstone home |
 | `read_only` | `SKMEMORY_READ_ONLY` | `false` | withholds `skmemory_store` and blocks all writes |
 | `mcp_command` | `SKMEMORY_MCP_BIN` | `PATH`, then `~/.local/bin`, `~/.skenv/bin` | path to `skmemory-mcp` |
-| `dsn` | none | `""` | sets `SKMEMORY_PG_DSN` for the child. **Contains a password.** In linked mode Hermes's own `SKMEMORY_PG_DSN` is passed through when this is empty. |
 | `assume_owner` | `SKMEMORY_ASSUME_OWNER` | `false` | Hermes without session scopes: treat every turn as the owner's (single-user installs only) |
 | `timeout` | none | `20` | seconds per MCP call |
 
 `hermes memory setup` prompts for `agent`, `skcapstone_home`, `read_only` and
 `assume_owner` (`get_config_schema`); `save_config` writes only known keys (those four plus
 `mcp_command` and `timeout`).
+
+Removed in 0.2.1, ignored with a warning: `dsn`. Set the DSN as the Hermes secret
+`SKMEMORY_PG_DSN` instead (linked mode only).
 
 Removed in 0.2.0, now ignored: `vector_backend`, `embed_url`, `embed_model`, and env
 `SKMEMORY_VECTOR_BACKEND`, `SKMEMORY_DSN`, `SKMEMORY_EMBED_*`. Search tiers belong to
@@ -313,7 +317,8 @@ Example linked config (placeholders):
 
 ### Who the turn is for
 
-- sk Hermes builds: `tools.session_scope.session_reader()`; `None` is the owner.
+- Builds with a `tools.session_scope` module (not in upstream Hermes; a public API is
+  proposed in [hermes-agent#160124](https://github.com/NousResearch/hermes-agent/issues/160124)): `session_reader()`; `None` is the owner.
 - Stock Hermes: CLI is the owner; a process with `_HERMES_GATEWAY=1` is `@public`, unless
   `assume_owner` is set.
 - Any error: `@public`.
@@ -397,7 +402,7 @@ summaries at 500.
 | Symptom | Check |
 |---|---|
 | `hermes plugins list` shows `skmemory` as **`not enabled`** | **Expected. Not a fault.** `kind: exclusive` plugins are skipped by the general scanner and loaded by the memory subsystem. Check `grep -n 'provider:' $HERMES_HOME/config.yaml` and look for `skmemory: ready` in the log. Do not add it to `plugins.enabled`. |
-| No `skmemory: ready` line; a warning `skmemory-mcp not found` | skmemory is not installed where Hermes can see it. `uv tool install skmemory` (or `pipx`), or set `mcp_command` / `SKMEMORY_MCP_BIN`. A systemd user service may have a shorter `PATH` than your shell; an absolute `mcp_command` avoids that. |
+| No `skmemory: ready` line; a warning `skmemory-mcp not found` | skmemory is not installed where Hermes can see it. `uv tool install skmemory==0.11.173` (or `pipx`), or set `mcp_command` / `SKMEMORY_MCP_BIN`. A systemd user service may have a shorter `PATH` than your shell; an absolute `mcp_command` avoids that. |
 | `ready` is logged but recall is always empty and tools return `... failed: skmemory-mcp exited` | The child dies on start. Run the same binary by hand with the same env (`SKMEMORY_HOME=$HERMES_HOME/.skmemory/agents/<agent> skmemory-mcp`) and read its stderr, which the plugin discards. |
 | Tools return `... timed out after 20s ...` | The server is slow or hung (cold start, a slow tier). Raise `timeout` in `skmemory.json`. The child is killed on a timeout and restarted on the next call. |
 | Recall is empty in a group chat or on a stock Hermes gateway | Working as designed: no session scope plus `_HERMES_GATEWAY=1` means `@public`, which sees only memories shared with `@public`. For a single-user install set `assume_owner: true`. |
@@ -405,7 +410,7 @@ summaries at 500.
 | The model has no `skmemory_store` tool | `read_only` is true (file or `SKMEMORY_READ_ONLY`). Working as designed. |
 | A sensitive memory does not show up in auto-injected context | Working as designed: the server drops sensitive-tagged rows from `memory_auto_context` in owner turns. `skmemory_search` can still find it. |
 | Linked mode warns `linked agent <agent> not found under <home>` | `skcapstone_home` or `agent` is wrong. The plugin carries on and the server decides what to do with a missing agent. |
-| Linked mode has keyword-quality results only | The child has no `SKMEMORY_PG_DSN`: Hermes's environment lacks it and `dsn` is not set. Set `dsn` or export it into the Hermes service environment. Check with skmemory's own `memory_health`. |
+| Linked mode has keyword-quality results only | The child has no `SKMEMORY_PG_DSN`: Hermes's secret store has none for this profile. Set `SKMEMORY_PG_DSN` as a Hermes secret (profile `.env`, or the service environment). Check with skmemory's own `memory_health`. |
 | Old config keys (`vector_backend`, `embed_url`) seem to do nothing | Removed in 0.2.0. Configure tiers in skmemory, not here. |
 | Edits to the repo have no effect on the running agent | The installed copy under `$HERMES_HOME/plugins/skmemory/` is a separate clone. Each profile has its own. Update it and restart. |
 
@@ -416,7 +421,7 @@ summaries at 500.
 | Field | Value |
 |---|---|
 | **Maturity tier** | **T0, N/A (no key material)**. No keys, no signing, no encryption. It may pass a Postgres DSN containing a password to the child. See `SECURITY.md`. |
-| **Version** | `0.2.0`, from the `version:` field in `plugin.yaml`. No `pyproject.toml`, no tag series, nothing on an index. |
+| **Version** | `0.2.1`, from the `version:` field in `plugin.yaml`. No `pyproject.toml`, no tag series, nothing on an index. |
 | **VERSION_LIFECYCLE phase** | Incubating: tested, not currently deployed on the SK estate. Expect breaking changes. |
 | **CRYPTOGRAPHY_STANDARD** | N/A, no crypto surface. |
 | **License** | GPL-3.0-or-later (`LICENSE`). |
@@ -427,7 +432,7 @@ summaries at 500.
 
 Honest gaps as of 2026-11-17. Read the absence of a claim as an absence of evidence.
 
-1. **Not deployed anywhere right now.** v0.2.0 is covered by the unit suite and one local
+1. **Not deployed anywhere right now.** v0.2.1 is covered by the unit suite and one local
    end-to-end run against a real `skmemory-mcp`, not by a live Hermes serving real turns.
 2. **The `hermes memory setup` wizard path was not exercised** against this version.
    Statements about it come from the code (`get_config_schema`, `save_config`) and Hermes's
@@ -470,5 +475,5 @@ checks:
   - name: tests exist where section 4 says
     run: test -f tests/test_provider.py && test -f tests/test_integration.py && test -f tests/fake_skmemory_mcp.py
   - name: documented version matches the manifest
-    run: grep -qx 'version: 0.2.0' plugin.yaml
+    run: grep -qx 'version: 0.2.1' plugin.yaml
 -->
