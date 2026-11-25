@@ -14,6 +14,35 @@ derived from commit messages and the diffs they carry, not from a log kept at th
 
 Nothing yet.
 
+## [0.2.1] - 2026-11-25
+
+Fixes from the Hermes plugin catalog review
+([hermes-agent#158276](https://github.com/NousResearch/hermes-agent/pull/158276)).
+
+### Security
+
+- **The child's environment is an allowlist.** `skmemory-mcp` inherits only `PATH`, `HOME`,
+  `USER`, `LOGNAME`, `LANG`, `LANGUAGE`, `LC_*`, `TZ`, `TMPDIR`/`TMP`/`TEMP` and a few
+  Windows basics, plus the SK variables the plugin sets. 0.2.0 passed everything except
+  the SK selectors, so Hermes's provider API keys reached the child.
+- **The Postgres DSN is a Hermes secret.** Linked mode reads `SKMEMORY_PG_DSN` with
+  `agent.secret_scope.get_secret` (declared in `optional_env` with `password: true`).
+  Isolated mode never passes a DSN.
+
+### Changed
+
+- **Pinned skmemory.** Docs install `skmemory==0.11.173` (`TESTED_SKMEMORY`), the first
+  release whose `skmemory-mcp` reports its own version in `serverInfo`. `initialize` warns
+  when the server is not skmemory `>=0.11.173,<0.12`.
+- `HERMES_HOME` fallback uses `hermes_constants.get_hermes_home()`.
+- README and SECURITY describe the stock-Hermes gateway fallback (every gateway turn is
+  `@public` and never writes) and link the public per-turn scope proposal
+  ([hermes-agent#160124](https://github.com/NousResearch/hermes-agent/issues/160124)).
+
+### Removed
+
+- Config key `dsn` in `skmemory.json`: ignored with a warning. Set the secret instead.
+
 ## [0.2.0] - 2026-11-17
 
 Breaking: the plugin no longer runs skmemory inside Hermes. Install skmemory as its own

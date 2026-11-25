@@ -2,6 +2,8 @@
 
 import importlib.util
 import json
+import logging
+import os
 import sys
 import time
 import types
@@ -11,6 +13,7 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 FAKE = ROOT / "tests" / "fake_skmemory_mcp.py"
+_SECRETS = {}
 
 
 def _load(monkeypatch, reader="OWNER"):
@@ -20,6 +23,9 @@ def _load(monkeypatch, reader="OWNER"):
     mp.MemoryProvider = type("MemoryProvider", (), {})
     monkeypatch.setitem(sys.modules, "agent", agent)
     monkeypatch.setitem(sys.modules, "agent.memory_provider", mp)
+    sc = types.ModuleType("agent.secret_scope")
+    sc.get_secret = lambda name, default=None: _SECRETS.get(name, default)
+    monkeypatch.setitem(sys.modules, "agent.secret_scope", sc)
     if reader == "MISSING":
         monkeypatch.setitem(sys.modules, "tools", None)
         monkeypatch.setitem(sys.modules, "tools.session_scope", None)
@@ -57,8 +63,11 @@ def _provider(mod, home, extra_cfg=None, **kwargs):
     (home / "skmemory.json").write_text(json.dumps(cfg))
     p = mod.SkmemoryProvider()
     p.initialize("sess1", hermes_home=str(home), **kwargs)
-    # The fake server is a script, so run it with the interpreter.
-    p.client._argv = [sys.executable, str(FAKE)]
+    # The fake server is a script, so run it with the interpreter. Its test knobs are
+    # not on the child-env allowlist, so hand them over explicitly.
+    if p.client is not None:
+        p.client._argv = [sys.executable, str(FAKE)]
+        p.client._env.update({k: v for k, v in os.environ.items() if k.startswith("FAKE_MCP_")})
     return p
 
 
@@ -194,7 +203,8 @@ def test_linked_mode_child_env(monkeypatch, env, tmp_path):
     home, log = env
     sk = tmp_path / "skcap"
     (sk / "agents" / "lumina").mkdir(parents=True)
-    monkeypatch.setenv("SKMEMORY_PG_DSN", "postgresql://node-local")
+    monkeypatch.setitem(_SECRETS, "SKMEMORY_PG_DSN", "postgresql://node-local")
+    monkeypatch.setenv("SKMEMORY_PG_DSN", "postgresql://from-process-env")
     p = _provider(_load(monkeypatch), home, {"agent": "lumina", "skcapstone_home": str(sk)})
     p.prefetch("dog question")
     e = _init_env(log)
@@ -222,6 +232,56 @@ def test_save_config_keeps_known_keys(monkeypatch, tmp_path):
     p = _load(monkeypatch).SkmemoryProvider()
     p.save_config({"agent": "a", "read_only": True, "bogus": 1}, str(tmp_path))
     assert json.loads((tmp_path / "skmemory.json").read_text()) == {"agent": "a", "read_only": True}
+
+
+def test_child_env_is_an_allowlist(monkeypatch, env):
+    home, log = env
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-secret")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-secret")
+    monkeypatch.setenv("SOME_TOKEN", "t")
+    monkeypatch.setenv("LC_ALL", "C.UTF-8")
+    p = _provider(_load(monkeypatch), home)
+    p.prefetch("dog question")
+    e = _init_env(log)
+    assert not {"OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "SOME_TOKEN"} & set(e)
+    assert e["LC_ALL"] == "C.UTF-8" and "PATH" in e
+    p.shutdown()
+
+
+def test_isolated_mode_never_gets_a_dsn(monkeypatch, env):
+    home, log = env
+    monkeypatch.setitem(_SECRETS, "SKMEMORY_PG_DSN", "postgresql://node-local")
+    p = _provider(_load(monkeypatch), home)
+    p.prefetch("dog question")
+    assert "SKMEMORY_PG_DSN" not in _init_env(log)
+    p.shutdown()
+
+
+def test_dsn_in_config_file_is_ignored(monkeypatch, env, tmp_path, caplog):
+    home, log = env
+    sk = tmp_path / "skcap"
+    (sk / "agents" / "a").mkdir(parents=True)
+    with caplog.at_level(logging.WARNING):
+        p = _provider(_load(monkeypatch), home,
+                      {"agent": "a", "skcapstone_home": str(sk), "dsn": "postgresql://in-file"})
+    p.prefetch("dog question")
+    assert "SKMEMORY_PG_DSN" not in _init_env(log)
+    assert "dsn" not in p._cfg
+    assert "ignoring `dsn`" in caplog.text
+    p.shutdown()
+
+
+@pytest.mark.parametrize("version,warns", [("0.11.173", False), ("0.11.190", False),
+                                           ("0.11.172", True), ("0.12.0", True), ("1.30.0", True)])
+def test_untested_server_version_warns(monkeypatch, env, caplog, version, warns):
+    home, log = env
+    monkeypatch.setenv("FAKE_MCP_VERSION", version)
+    p = _provider(_load(monkeypatch), home)
+    with caplog.at_level(logging.WARNING):
+        p.prefetch("dog question")
+    assert ("is tested with skmemory" in caplog.text) is warns
+    assert p.client.server_info["version"] == version
+    p.shutdown()
 
 
 # -- transport ----------------------------------------------------------------

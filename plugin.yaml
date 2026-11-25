@@ -1,5 +1,5 @@
 name: skmemory
-version: 0.2.0
+version: 0.2.1
 description: >-
   skmemory as a Hermes memory provider, with skmemory kept outside Hermes: the
   plugin runs the skmemory-mcp stdio server as a child process and calls it over
@@ -14,7 +14,7 @@ kind: exclusive
 # MemoryProvider with queue_prefetch, get_config_schema/save_config and backup_paths.
 requires_hermes: ">=0.21.6"
 # No pip_dependencies on purpose: skmemory is NOT installed into Hermes's venv.
-# Install it as its own tool (`uv tool install skmemory` or `pipx install skmemory`)
+# Install it as its own tool at the tested version (`uv tool install skmemory==0.11.173`)
 # so `skmemory-mcp` is on PATH, or set mcp_command in $HERMES_HOME/skmemory.json.
 # Memory-provider tools come through get_tool_schemas(), not ctx.register_tool(),
 # so nothing is declared here (skmemory_search, skmemory_store).
@@ -37,3 +37,7 @@ optional_env:
     description: "'true' on a single-user install whose Hermes has no session scopes: every turn counts as the owner's"
     prompt: "Assume every turn is the owner's? (true/false)"
     password: false
+  - name: SKMEMORY_PG_DSN
+    description: "Linked mode only: Postgres DSN for the skmemory node tiers (read with get_secret, passed to skmemory-mcp)"
+    prompt: "Postgres DSN for linked mode (or empty)"
+    password: true
