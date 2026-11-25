@@ -462,8 +462,10 @@ checks:
     run: grep -q 'path = hermes_home / "skmemory.json"' __init__.py
   - name: isolated store still uses the dotted directory
     run: grep -q 'skcap_home = hermes_home / ".skmemory"' __init__.py
-  - name: child env strips the documented inherited prefixes
-    run: grep -qF '_SK_ENV_PREFIXES = ("SKMEMORY_", "SKCAPSTONE_", "SKAGENT", "SK_DEFAULT_AGENT")' __init__.py
+  - name: child env is built from the documented allowlist
+    run: grep -qF '"PATH", "HOME", "USER", "LOGNAME", "LANG", "LANGUAGE", "TZ", "TMPDIR", "TMP", "TEMP",' __init__.py && grep -qF '_ENV_ALLOW_PREFIXES = ("LC_",)' __init__.py && grep -qF 'if k in _ENV_ALLOW or k.startswith(_ENV_ALLOW_PREFIXES)' __init__.py
+  - name: documented tested skmemory pin matches the code
+    run: grep -qF 'TESTED_SKMEMORY = "0.11.173"' __init__.py && grep -qF 'uv tool install skmemory==0.11.173' README.md
   - name: documented default timeout is 20 seconds
     run: grep -qx 'DEFAULT_TIMEOUT = 20.0' __init__.py
   - name: documented server tools are the ones called
