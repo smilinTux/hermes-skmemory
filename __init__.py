@@ -13,9 +13,10 @@ reader rules, and lets the same plugin serve two setups:
   existing skcapstone agent, and the child serves that store with whatever tiers
   the node has (pgvector, BM25, graph).
 
-Install skmemory where Hermes can run it, not into Hermes's venv::
+Install skmemory where Hermes can run it, not into Hermes's venv, at the tested
+version (``TESTED_SKMEMORY``)::
 
-    uv tool install skmemory        # or: pipx install skmemory
+    uv tool install skmemory==0.11.173   # or: pipx install skmemory==0.11.173
 
 Config: ``$HERMES_HOME/skmemory.json`` (all optional), env vars override nothing
 that the file sets::
@@ -25,17 +26,23 @@ that the file sets::
       "skcapstone_home": "",          # linked mode: an existing skcapstone home
       "read_only": false,             # recall only, never write
       "mcp_command": "",              # path to skmemory-mcp (default: found on PATH)
-      "dsn": "",                      # optional Postgres DSN for the child (linked setups)
       "assume_owner": false,          # see "Owner turns" below
       "timeout": 20                   # seconds per MCP call
     }
 
-Owner turns: a turn is an owner turn only when Hermes says so. On a Hermes with
-session scopes (``tools.session_scope``) the reader comes from there. Without it,
-the local CLI counts as the owner and a messaging gateway counts as ``@public``
-(fail closed), unless ``assume_owner`` is set for a single-user install. Non-owner
-turns search under their reader, get no sensitive memories injected, and never
-write.
+Linked mode only: the Postgres DSN comes from Hermes's secret store
+(``SKMEMORY_PG_DSN`` via ``agent.secret_scope.get_secret``), never from this file.
+
+Owner turns: a turn is an owner turn only when Hermes says so. Upstream Hermes has
+no public per-turn reader scope yet, so the local CLI counts as the owner and a
+messaging gateway counts as ``@public`` (fail closed: recall under ``@public``, no
+writes), unless ``assume_owner`` is set for a single-user install. Hermes builds
+that carry a session-scope module (``tools.session_scope``, not in upstream) supply
+the reader instead. Non-owner turns search under their reader, get no sensitive
+memories injected, and never write.
+
+The child gets an allowlisted environment only (see ``_child_env``): no Hermes
+provider keys or other secrets reach ``skmemory-mcp``.
 """
 
 from __future__ import annotations
@@ -57,11 +64,23 @@ logger = logging.getLogger(__name__)
 
 PROTOCOL_VERSION = "2025-06-18"
 DEFAULT_TIMEOUT = 20.0
+PLUGIN_VERSION = "0.2.1"
 _PUBLIC = "@public"
 _TRUE = ("1", "true", "yes", "on")
-# Env the child must not inherit from a Hermes that happens to run on an skcapstone
-# node: these would point an isolated store at someone else's memory.
-_SK_ENV_PREFIXES = ("SKMEMORY_", "SKCAPSTONE_", "SKAGENT", "SK_DEFAULT_AGENT")
+# The only variables the child inherits from Hermes. Everything else (provider API
+# keys, tokens, and any SK* selector that could point an isolated store at someone
+# else's memory) stays out. The SK variables the child needs are set explicitly.
+_ENV_ALLOW = frozenset((
+    "PATH", "HOME", "USER", "LOGNAME", "LANG", "LANGUAGE", "TZ", "TMPDIR", "TMP", "TEMP",
+    # Windows basics, so Python can start there at all.
+    "SYSTEMROOT", "SYSTEMDRIVE", "USERPROFILE", "APPDATA", "LOCALAPPDATA", "PATHEXT", "COMSPEC",
+))
+_ENV_ALLOW_PREFIXES = ("LC_",)
+
+# skmemory versions this plugin is tested against (serverInfo.version of skmemory-mcp).
+TESTED_SKMEMORY = "0.11.173"
+_SUPPORTED_MIN = (0, 11, 173)
+_SUPPORTED_BELOW = (0, 12, 0)
 
 _STOPWORDS = frozenset(
     """a an and are as at be but by can could did do does for from had has have how i if in
@@ -88,6 +107,47 @@ def _session_reader(assume_owner: bool = False):
     except Exception as e:  # fail closed
         logger.debug("skmemory: session scope failed (%s); treating as public", e)
         return _PUBLIC
+
+
+def _version_tuple(v: str):
+    try:
+        return tuple(int(x) for x in str(v).split("+")[0].split(".")[:3])
+    except ValueError:
+        return None
+
+
+def _check_server_version(info: Dict[str, Any]) -> None:
+    """Warn when skmemory-mcp is not a tested version. Never raises."""
+    version = str((info or {}).get("version") or "")
+    vt = _version_tuple(version)
+    if (info or {}).get("name") != "skmemory" or vt is None or not (
+            _SUPPORTED_MIN <= vt < _SUPPORTED_BELOW):
+        logger.warning(
+            "skmemory: skmemory-mcp reports %s %s; this plugin is tested with skmemory %s "
+            "(supported >=%s,<%s). Install it with `uv tool install skmemory==%s`.",
+            (info or {}).get("name") or "?", version or "?", TESTED_SKMEMORY,
+            ".".join(map(str, _SUPPORTED_MIN)), ".".join(map(str, _SUPPORTED_BELOW)),
+            TESTED_SKMEMORY)
+
+
+def _secret(name: str) -> Optional[str]:
+    """A credential from Hermes's profile secret scope. Never raises; None when absent."""
+    try:
+        from agent.secret_scope import get_secret
+
+        return get_secret(name) or None
+    except Exception as e:  # no scope bound, or an old Hermes: no secret
+        logger.debug("skmemory: secret %s unavailable (%s)", name, e)
+        return None
+
+
+def _hermes_home() -> Path:
+    try:
+        from hermes_constants import get_hermes_home
+
+        return Path(get_hermes_home())
+    except Exception:
+        return Path(os.path.expanduser(os.environ.get("HERMES_HOME") or "~/.hermes"))
 
 
 def _keywords(text: str, limit: int = 8) -> str:
@@ -128,6 +188,7 @@ class McpClient:
         self._lines: "queue.Queue[Optional[str]]" = queue.Queue()
         self._lock = threading.Lock()
         self._next_id = 0
+        self.server_info: Dict[str, Any] = {}
 
     def _start(self) -> None:
         self._lines = queue.Queue()
@@ -143,11 +204,13 @@ class McpClient:
         )
         threading.Thread(target=self._pump, args=(self._proc, self._lines),
                          name="skmemory-mcp-reader", daemon=True).start()
-        self._request("initialize", {
+        init = self._request("initialize", {
             "protocolVersion": PROTOCOL_VERSION,
             "capabilities": {},
-            "clientInfo": {"name": "hermes-skmemory", "version": "0.2.0"},
+            "clientInfo": {"name": "hermes-skmemory", "version": PLUGIN_VERSION},
         })
+        self.server_info = init.get("serverInfo") or {}
+        _check_server_version(self.server_info)
         self._send({"jsonrpc": "2.0", "method": "notifications/initialized"})
 
     @staticmethod
@@ -306,7 +369,6 @@ class SkmemoryProvider(MemoryProvider):
             "skcapstone_home": os.environ.get("SKMEMORY_LINK_HOME", ""),
             "read_only": str(os.environ.get("SKMEMORY_READ_ONLY", "")).lower() in _TRUE,
             "mcp_command": os.environ.get("SKMEMORY_MCP_BIN", ""),
-            "dsn": "",
             "assume_owner": str(os.environ.get("SKMEMORY_ASSUME_OWNER", "")).lower() in _TRUE,
             "timeout": DEFAULT_TIMEOUT,
         }
@@ -314,7 +376,10 @@ class SkmemoryProvider(MemoryProvider):
         if path.exists():
             try:
                 data = json.loads(path.read_text(encoding="utf-8"))
-                cfg.update({k: v for k, v in data.items() if v not in (None, "")})
+                if "dsn" in data:
+                    logger.warning("skmemory: ignoring `dsn` in skmemory.json; set "
+                                   "SKMEMORY_PG_DSN as a Hermes secret instead")
+                cfg.update({k: v for k, v in data.items() if v not in (None, "") and k != "dsn"})
             except Exception as e:
                 logger.warning("skmemory: bad skmemory.json (%s); using defaults", e)
         return cfg
@@ -347,7 +412,8 @@ class SkmemoryProvider(MemoryProvider):
 
     # -- lifecycle ----------------------------------------------------------
     def _child_env(self, skcap_home: Path, agent_home: Optional[Path]) -> Dict[str, str]:
-        env = {k: v for k, v in os.environ.items() if not k.startswith(_SK_ENV_PREFIXES)}
+        env = {k: v for k, v in os.environ.items()
+               if k in _ENV_ALLOW or k.startswith(_ENV_ALLOW_PREFIXES)}
         env.update({
             "SKCAPSTONE_HOME": str(skcap_home),
             "SKAGENT": self._agent,
@@ -358,14 +424,14 @@ class SkmemoryProvider(MemoryProvider):
             # Isolated store: an explicit home is an operator instruction to skmemory,
             # so it opens this store without a profile registry.
             env["SKMEMORY_HOME"] = str(agent_home)
-        if self._cfg.get("dsn"):
-            env["SKMEMORY_PG_DSN"] = str(self._cfg["dsn"])
-        elif self._mode == "linked" and os.environ.get("SKMEMORY_PG_DSN"):
-            env["SKMEMORY_PG_DSN"] = os.environ["SKMEMORY_PG_DSN"]
+        if self._mode == "linked":
+            dsn = _secret("SKMEMORY_PG_DSN")
+            if dsn:
+                env["SKMEMORY_PG_DSN"] = dsn
         return env
 
     def initialize(self, session_id: str, **kwargs) -> None:
-        hermes_home = Path(kwargs.get("hermes_home") or os.path.expanduser("~/.hermes"))
+        hermes_home = Path(kwargs.get("hermes_home") or _hermes_home())
         self._cfg = self._load_config(hermes_home)
         self._agent = str(self._cfg.get("agent") or "hermes")
         self._read_only = bool(self._cfg.get("read_only"))

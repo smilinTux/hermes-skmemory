@@ -32,10 +32,9 @@ for line in sys.stdin:
     msg = json.loads(line)
     method, rid, params = msg.get("method"), msg.get("id"), msg.get("params") or {}
     if method == "initialize":
-        log({"init": True, "env": {k: v for k, v in os.environ.items()
-                                   if k.startswith(("SK", "FAKE"))}})
+        log({"init": True, "env": dict(os.environ)})
         reply(rid, {"protocolVersion": params.get("protocolVersion"), "capabilities": {},
-                    "serverInfo": {"name": "fake-skmemory", "version": "0"}})
+                    "serverInfo": {"name": "skmemory", "version": os.environ.get("FAKE_MCP_VERSION", "0.11.173")}})
         continue
     if method != "tools/call":
         continue
