@@ -104,7 +104,7 @@ flowchart TD
 | `__init__.py` `initialize()` / `_child_env()` | Mode selection, store scaffold, server lookup, and the environment the child gets. |
 | `__init__.py` `class McpClient` | The stdio transport: `initialize` handshake, `tools/call`, timeout, restart. |
 | `__init__.py` `_session_reader()` | Who the turn is for. `None` means owner. |
-| `plugin.yaml` | Manifest. `name: skmemory`, `kind: exclusive`, `version: 0.2.1`, `requires_hermes: ">=0.21.6"`, no `pip_dependencies`. |
+| `plugin.yaml` | Manifest. `name: skmemory`, `kind: exclusive`, `version: 0.2.2`, `requires_hermes: ">=0.21.6"`, no `pip_dependencies`. |
 
 Note that the **plugin directory and manifest name is `skmemory`**, not
 `hermes-skmemory`. The repo is `hermes-skmemory`; the thing Hermes loads is `skmemory`.
@@ -136,7 +136,7 @@ So:
 ### The child process and its environment
 
 One `skmemory-mcp` child per provider instance, so one per Hermes profile. It is started
-lazily on the first memory call, with `cwd=$HERMES_HOME` and stderr discarded. The client
+lazily on the first memory call, with `cwd=$HERMES_HOME`, its stderr appended to `$HERMES_HOME/logs/skmemory-mcp-<agent>.log` (0600, rotated at 5 MB). The client
 does the MCP `initialize` handshake (protocol `2025-06-18`), then sends `tools/call`
 requests one at a time.
 
@@ -257,7 +257,7 @@ and restart. Memory recall stops; nothing else is affected.
 own `skmemory.json` and its own child. Updating one does not update the others.
 
 **Version:** there is no `pyproject.toml`. The version is the literal `version:` field in
-`plugin.yaml` (`0.2.1`).
+`plugin.yaml` (`0.2.2`).
 
 ### Front-end / Exposure
 
@@ -403,7 +403,7 @@ summaries at 500.
 |---|---|
 | `hermes plugins list` shows `skmemory` as **`not enabled`** | **Expected. Not a fault.** `kind: exclusive` plugins are skipped by the general scanner and loaded by the memory subsystem. Check `grep -n 'provider:' $HERMES_HOME/config.yaml` and look for `skmemory: ready` in the log. Do not add it to `plugins.enabled`. |
 | No `skmemory: ready` line; a warning `skmemory-mcp not found` | skmemory is not installed where Hermes can see it. `uv tool install skmemory==0.11.173` (or `pipx`), or set `mcp_command` / `SKMEMORY_MCP_BIN`. A systemd user service may have a shorter `PATH` than your shell; an absolute `mcp_command` avoids that. |
-| `ready` is logged but recall is always empty and tools return `... failed: skmemory-mcp exited` | The child dies on start. Run the same binary by hand with the same env (`SKMEMORY_HOME=$HERMES_HOME/.skmemory/agents/<agent> skmemory-mcp`) and read its stderr, which the plugin discards. |
+| `ready` is logged but recall is always empty and tools return `... failed: skmemory-mcp exited` | The child dies on start. Run the same binary by hand with the same env (`SKMEMORY_HOME=$HERMES_HOME/.skmemory/agents/<agent> skmemory-mcp`) or read `$HERMES_HOME/logs/skmemory-mcp-<agent>.log`: since 0.2.2 the child's stderr goes there, and the first failure of a kind is a `WARNING` in the Hermes log naming that file. |
 | Tools return `... timed out after 20s ...` | The server is slow or hung (cold start, a slow tier). Raise `timeout` in `skmemory.json`. The child is killed on a timeout and restarted on the next call. |
 | Recall is empty in a group chat or on a stock Hermes gateway | Working as designed: no session scope plus `_HERMES_GATEWAY=1` means `@public`, which sees only memories shared with `@public`. For a single-user install set `assume_owner: true`. |
 | Turns are not being written to memory | `read_only` is true, or `agent_context` is not `"primary"`, or the turn is not an owner turn. Cron, subagents and non-owner turns never write, on purpose. |
@@ -421,7 +421,7 @@ summaries at 500.
 | Field | Value |
 |---|---|
 | **Maturity tier** | **T0, N/A (no key material)**. No keys, no signing, no encryption. It may pass a Postgres DSN containing a password to the child. See `SECURITY.md`. |
-| **Version** | `0.2.1`, from the `version:` field in `plugin.yaml`. No `pyproject.toml`, no tag series, nothing on an index. |
+| **Version** | `0.2.2`, from the `version:` field in `plugin.yaml`. No `pyproject.toml`, no tag series, nothing on an index. |
 | **VERSION_LIFECYCLE phase** | Incubating: tested, not currently deployed on the SK estate. Expect breaking changes. |
 | **CRYPTOGRAPHY_STANDARD** | N/A, no crypto surface. |
 | **License** | GPL-3.0-or-later (`LICENSE`). |
@@ -432,7 +432,7 @@ summaries at 500.
 
 Honest gaps as of 2026-11-17. Read the absence of a claim as an absence of evidence.
 
-1. **Not deployed anywhere right now.** v0.2.1 is covered by the unit suite and one local
+1. **Not deployed anywhere right now.** v0.2.2 is covered by the unit suite and one local
    end-to-end run against a real `skmemory-mcp`, not by a live Hermes serving real turns.
 2. **The `hermes memory setup` wizard path was not exercised** against this version.
    Statements about it come from the code (`get_config_schema`, `save_config`) and Hermes's
@@ -477,5 +477,5 @@ checks:
   - name: tests exist where section 4 says
     run: test -f tests/test_provider.py && test -f tests/test_integration.py && test -f tests/fake_skmemory_mcp.py
   - name: documented version matches the manifest
-    run: grep -qx 'version: 0.2.1' plugin.yaml
+    run: grep -qx 'version: 0.2.2' plugin.yaml
 -->

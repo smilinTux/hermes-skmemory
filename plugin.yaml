@@ -1,5 +1,5 @@
 name: skmemory
-version: 0.2.1
+version: 0.2.2
 description: >-
   skmemory as a Hermes memory provider, with skmemory kept outside Hermes: the
   plugin runs the skmemory-mcp stdio server as a child process and calls it over

@@ -68,6 +68,10 @@ It is the only positive confirmation. If `skmemory-mcp` cannot be found, `initia
 logs `skmemory: skmemory-mcp not found. ...` as a warning and Hermes runs on with no memory,
 so silence means broken, not fine. The child itself starts lazily on the first memory call.
 
+If the child fails later (a crash on start, a timeout), the first failure of each kind is
+logged as a `WARNING` (`skmemory turn write failed: ...`), and the child's own stderr is in
+`$HERMES_HOME/logs/skmemory-mcp-<agent>.log`. Read that file first.
+
 ## Two modes
 
 **The child's environment is an allowlist.** `skmemory-mcp` inherits only `PATH`, `HOME`,
@@ -156,7 +160,7 @@ memories; per the server they remain reachable by an explicit `skmemory_search`.
 
 ## Status
 
-**v0.2.1, tested, not currently deployed on the SK estate.** `tests/` holds 28 provider
+**v0.2.2, tested, not currently deployed on the SK estate.** `tests/` holds 32 provider
 tests against a fake MCP server and one end-to-end test against a real `skmemory-mcp`
 (skipped when it is not installed). CI runs compileall, ruff, an AST contract check, a
 manifest check and pytest. Incubating: expect breaking changes.

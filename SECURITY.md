@@ -52,7 +52,7 @@ not reach us, not that it was dismissed. Please chase it.
 
 | Version | Status | Fixes |
 |---|---|---|
-| `master` (currently `0.2.1` per `plugin.yaml`) | Active, incubating | Yes |
+| `master` (currently `0.2.2` per `plugin.yaml`) | Active, incubating | Yes |
 | `0.1.x` (in-process skmemory) | Unsupported | Update to `master` |
 
 There are no published artifacts, no tag series, and nothing on PyPI for this plugin, so
@@ -72,8 +72,11 @@ a DSN.
 - **There is no DSN in `skmemory.json`.** Since 0.2.1 a `dsn` key there is ignored with a
   warning; remove it and set the secret instead.
 - **Never commit a real DSN to this repo.** Every example must stay a placeholder.
-- **The plugin does not log its config or the child env.** The child's stderr is discarded,
-  so skmemory's own error output does not reach the Hermes log through this plugin.
+- **The plugin does not log its config or the child env.** Since 0.2.2 the child's stderr is
+  appended to `$HERMES_HOME/logs/skmemory-mcp-<agent>.log` (mode 0600, rotated once at 5 MB to `.1`), so
+  skmemory's own error output lands there. It is skmemory's output, not the plugin's: if
+  skmemory ever printed a DSN or memory content to stderr, it would be in that file. Treat
+  the file like the rest of `$HERMES_HOME`.
 - If a credential is ever exposed, rotate the Postgres role first, prove the new
   credential works, and only then revoke the old one.
 
