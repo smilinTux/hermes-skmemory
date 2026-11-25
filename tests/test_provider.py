@@ -284,6 +284,68 @@ def test_untested_server_version_warns(monkeypatch, env, caplog, version, warns)
     p.shutdown()
 
 
+def test_python_path_vars_never_reach_the_child(monkeypatch, env):
+    # 0.2.0 passed Hermes's PYTHONPATH (its own source tree and site-packages) to
+    # skmemory-mcp, which then crashed on start under a different Python.
+    home, log = env
+    monkeypatch.setenv("PYTHONPATH", "/hermes/src:/hermes/py314/site-packages")
+    monkeypatch.setenv("PYTHONHOME", "/hermes/py314")
+    monkeypatch.setenv("PYTHONSTARTUP", "/x.py")
+    p = _provider(_load(monkeypatch), home)
+    p.prefetch("dog question")
+    e = _init_env(log)
+    assert not {k for k in e if k.startswith("PYTHON")}
+    p.shutdown()
+
+
+def test_child_stderr_goes_to_a_log_and_write_failure_warns_once(monkeypatch, env, caplog):
+    home, log = env
+    monkeypatch.setenv("FAKE_MCP_MODE", "crash")
+    p = _provider(_load(monkeypatch), home, {"agent": "bot"})
+    with caplog.at_level(logging.DEBUG):
+        p.sync_turn("my dog is Biscuit", "Noted!", session_id="s")
+        p.sync_turn("my cat is Tom", "Noted!", session_id="s")
+    errlog = home / "logs" / "skmemory-mcp-bot.log"
+    assert "ArgsKwargs" in errlog.read_text()
+    assert oct(errlog.stat().st_mode & 0o777) == "0o600"
+    warnings = [r for r in caplog.records if r.levelno == logging.WARNING and "turn write" in r.getMessage()]
+    assert len(warnings) == 1
+    assert str(errlog) in warnings[0].getMessage()
+    p.shutdown()
+
+
+def test_write_failure_warns_again_after_recovery(monkeypatch, env, caplog):
+    home, log = env
+    p = _provider(_load(monkeypatch), home)
+    with caplog.at_level(logging.DEBUG):
+        p.client._env["FAKE_MCP_MODE"] = "crash"
+        p.sync_turn("a1", "b1")
+        p.client._env["FAKE_MCP_MODE"] = ""
+        p.sync_turn("a2", "b2")
+        p.client.close()
+        p.client._env["FAKE_MCP_MODE"] = "crash"
+        p.sync_turn("a3", "b3")
+    msgs = [r.getMessage() for r in caplog.records if "turn write" in r.getMessage()]
+    assert [m.split(" failed")[0] if "failed" in m else m for m in msgs] == [
+        "skmemory turn write", "skmemory turn write works again", "skmemory turn write"]
+    assert sum(1 for r in caplog.records if r.levelno == logging.WARNING and "turn write" in r.getMessage()) == 2
+    p.shutdown()
+
+
+def test_stderr_log_rotates(monkeypatch, env):
+    home, log = env
+    mod = _load(monkeypatch)
+    monkeypatch.setattr(mod, "STDERR_LOG_MAX_BYTES", 10)
+    errlog = home / "logs" / "skmemory-mcp-hermes.log"
+    errlog.parent.mkdir(parents=True)
+    errlog.write_text("x" * 100)
+    p = _provider(mod, home)
+    p.prefetch("dog question")
+    assert (home / "logs" / "skmemory-mcp-hermes.log.1").read_text() == "x" * 100
+    assert "starting" in errlog.read_text()
+    p.shutdown()
+
+
 # -- transport ----------------------------------------------------------------
 
 

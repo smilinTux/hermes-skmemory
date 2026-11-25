@@ -55,6 +55,7 @@ import re
 import shutil
 import subprocess
 import threading
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -64,7 +65,9 @@ logger = logging.getLogger(__name__)
 
 PROTOCOL_VERSION = "2025-06-18"
 DEFAULT_TIMEOUT = 20.0
-PLUGIN_VERSION = "0.2.1"
+PLUGIN_VERSION = "0.2.2"
+# The child's stderr goes here (rotated once at this size), so a startup crash is visible.
+STDERR_LOG_MAX_BYTES = 5 * 1024 * 1024
 _PUBLIC = "@public"
 _TRUE = ("1", "true", "yes", "on")
 # The only variables the child inherits from Hermes. Everything else (provider API
@@ -179,8 +182,10 @@ class McpClient:
     on the next call.
     """
 
-    def __init__(self, argv: List[str], env: Dict[str, str], cwd: str, timeout: float):
+    def __init__(self, argv: List[str], env: Dict[str, str], cwd: str, timeout: float,
+                 stderr_log: Optional[Path] = None):
         self._argv = argv
+        self._stderr_log = stderr_log
         self._env = env
         self._cwd = cwd
         self._timeout = timeout
@@ -190,18 +195,41 @@ class McpClient:
         self._next_id = 0
         self.server_info: Dict[str, Any] = {}
 
+    def _open_stderr_log(self):
+        """Append handle for the child's stderr, or DEVNULL if the log cannot be opened."""
+        path = self._stderr_log
+        if path is None:
+            return subprocess.DEVNULL
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if path.exists() and path.stat().st_size > STDERR_LOG_MAX_BYTES:
+                os.replace(path, path.with_name(path.name + ".1"))
+            fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            fh = os.fdopen(fd, "a", encoding="utf-8")
+            fh.write(f"--- {time.strftime('%Y-%m-%dT%H:%M:%S%z')} starting {self._argv[0]}\n")
+            fh.flush()
+            return fh
+        except OSError as e:
+            logger.warning("skmemory: cannot open %s for skmemory-mcp stderr (%s)", path, e)
+            return subprocess.DEVNULL
+
     def _start(self) -> None:
         self._lines = queue.Queue()
-        self._proc = subprocess.Popen(
-            self._argv,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            env=self._env,
-            cwd=self._cwd,
-            text=True,
-            bufsize=1,
-        )
+        err = self._open_stderr_log()
+        try:
+            self._proc = subprocess.Popen(
+                self._argv,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=err,
+                env=self._env,
+                cwd=self._cwd,
+                text=True,
+                bufsize=1,
+            )
+        finally:
+            if err is not subprocess.DEVNULL:
+                err.close()  # the child holds its own copy of the descriptor
         threading.Thread(target=self._pump, args=(self._proc, self._lines),
                          name="skmemory-mcp-reader", daemon=True).start()
         init = self._request("initialize", {
@@ -238,7 +266,8 @@ class McpClient:
                 raise McpError(f"skmemory-mcp timed out after {self._timeout:g}s on {method}")
             if line is None:
                 self.close()
-                raise McpError("skmemory-mcp exited")
+                where = f"; its stderr is in {self._stderr_log}" if self._stderr_log else ""
+                raise McpError(f"skmemory-mcp exited{where}")
             try:
                 msg = json.loads(line)
             except ValueError:
@@ -346,6 +375,7 @@ class SkmemoryProvider(MemoryProvider):
         self._mode = "isolated"
         self._home: Optional[Path] = None
         self._prefetched: Dict[str, str] = {}
+        self._failing: set = set()
         self._prefetch_lock = threading.Lock()
 
     @property
@@ -468,8 +498,10 @@ class SkmemoryProvider(MemoryProvider):
             timeout = float(self._cfg.get("timeout") or DEFAULT_TIMEOUT)
         except (TypeError, ValueError):
             timeout = DEFAULT_TIMEOUT
+        # Under HERMES_HOME in both modes: linked mode must not create files in the target store.
+        stderr_log = hermes_home / "logs" / f"skmemory-mcp-{self._agent}.log"
         self.client = McpClient([command], self._child_env(skcap_home, agent_home),
-                                cwd=str(hermes_home), timeout=timeout)
+                                cwd=str(hermes_home), timeout=timeout, stderr_log=stderr_log)
         logger.info("skmemory: ready (mode=%s, agent=%s, read_only=%s, server=%s)",
                     self._mode, self._agent, self._read_only, command)
 
@@ -489,6 +521,20 @@ class SkmemoryProvider(MemoryProvider):
             return "You have a persistent skmemory store. Use `skmemory_search` to recall facts and context."
         return ("You have a persistent skmemory store. Use `skmemory_search` to recall "
                 "facts/preferences and `skmemory_store` to save things worth keeping.")
+
+    # -- failure reporting --------------------------------------------------
+    def _failed(self, what: str, e: Exception) -> None:
+        """Warn on the first failure of each kind, then debug until it succeeds again."""
+        if what in self._failing:
+            logger.debug("skmemory %s failed again: %s", what, e)
+        else:
+            self._failing.add(what)
+            logger.warning("skmemory %s failed: %s", what, e)
+
+    def _ok(self, what: str) -> None:
+        if what in self._failing:
+            self._failing.discard(what)
+            logger.info("skmemory %s works again", what)
 
     # -- recall -------------------------------------------------------------
     def _reader(self):
@@ -513,8 +559,9 @@ class SkmemoryProvider(MemoryProvider):
         try:
             payload = self.client.call_tool("memory_auto_context", args)
         except Exception as e:
-            logger.debug("skmemory recall failed: %s", e)
+            self._failed("recall", e)
             return ""
+        self._ok("recall")
         rows = payload.get("results") if isinstance(payload, dict) else None
         lines = []
         for r in rows or []:
@@ -560,7 +607,9 @@ class SkmemoryProvider(MemoryProvider):
                 "source": "hermes", "layer": "short-term",
             })
         except Exception as e:
-            logger.debug("skmemory sync_turn write failed: %s", e)
+            self._failed("turn write", e)
+            return
+        self._ok("turn write")
 
     # -- tools --------------------------------------------------------------
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
@@ -580,6 +629,7 @@ class SkmemoryProvider(MemoryProvider):
                 if reader is not None:
                     call["reader"] = reader
                 rows = self.client.call_tool("memory_search", call)
+                self._ok(f"tool {tool_name}")
                 if isinstance(rows, dict):
                     rows = rows.get("results") or []
                 out = [{"id": r.get("id"), "title": r.get("title", ""),
@@ -599,10 +649,11 @@ class SkmemoryProvider(MemoryProvider):
                     "title": str(args.get("title") or content[:60]), "content": content,
                     "tags": tags, "source": "hermes",
                 })
+                self._ok(f"tool {tool_name}")
                 mid = payload.get("memory_id") if isinstance(payload, dict) else None
                 return json.dumps({"stored": True, "id": mid})
         except Exception as e:
-            logger.debug("skmemory tool %s failed: %s", tool_name, e)
+            self._failed(f"tool {tool_name}", e)
             return _err(f"{tool_name} failed: {e}")
         return _err(f"unknown tool {tool_name}")
 

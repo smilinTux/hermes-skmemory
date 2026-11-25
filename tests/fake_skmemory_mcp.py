@@ -2,7 +2,8 @@
 """A stand-in for skmemory-mcp: MCP stdio, a few tools, every call logged as JSON lines.
 
 FAKE_MCP_LOG: where calls go. FAKE_MCP_MODE: "" (normal), "hang" (never answers tools/call),
-"die" (exits on tools/call). The child env is logged on initialize.
+"die" (exits on tools/call), "crash" (writes a traceback to stderr and exits at startup, like a
+skmemory-mcp that cannot import its dependencies). The child env is logged on initialize.
 """
 import json
 import os
@@ -12,6 +13,11 @@ import time
 LOG = os.environ["FAKE_MCP_LOG"]
 MODE = os.environ.get("FAKE_MCP_MODE", "")
 STORE = []
+
+if MODE == "crash":
+    sys.stderr.write("ImportError: cannot import name 'ArgsKwargs' from 'pydantic_core'\n")
+    sys.stderr.flush()
+    sys.exit(1)
 
 
 def log(entry):
